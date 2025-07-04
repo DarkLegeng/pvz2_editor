@@ -5,6 +5,7 @@ INSTALL_DIR="$HOME/pvz2_editor"
 LEVELS_DIR="/sdcard/Download/PvZ2_Levels"
 BACKUP_DIR="$HOME/pvz2_backups"
 INSTALLER_SCRIPT="$HOME/installer.sh"
+PYTHON_DEPS="requirements.txt"
 
 GREEN='\e[1;32m'
 RED='\e[1;31m'
@@ -29,94 +30,77 @@ debug() {
     echo -e "${BLUE}🐛 $1${NC}"
 }
 
-[ ! -d "/data/data/com.termux/files/home" ] && error "Этот скрипт должен запускаться в Termux!"
+check_termux() {
+    [ ! -d "/data/data/com.termux/files/home" ] && error "Этот скрипт должен запускаться в Termux!"
+}
 
-auto_fix_configs() {
-    info "Настройка системы для автоматического разрешения конфликтов..."
-    mkdir -p /data/data/com.termux/files/usr/etc/apt/apt.conf.d
-    echo 'DPkg::options { "--force-confdef"; "--force-confnew"; }' > /data/data/com.termux/files/usr/etc/apt/apt.conf.d/99force-conf
+fix_pkg_config() {
+    info "Исправление конфигурации пакетов..."
+    mkdir -p $PREFIX/etc/apt/apt.conf.d
+    echo 'DPkg::options { "--force-confdef"; "--force-confnew"; }' > $PREFIX/etc/apt/apt.conf.d/99force-conf
     export DEBIAN_FRONTEND=noninteractive
 }
 
-fix_openssl_issue() {
-    info "Попытка исправить проблему с OpenSSL..."
+install_dependencies() {
+    info "Установка системных зависимостей..."
+    pkg update -y && pkg upgrade -y
     
-    mkdir -p "$BACKUP_DIR"
-    if [ -f "/data/data/com.termux/files/usr/etc/tls/openssl.cnf" ]; then
-        cp "/data/data/com.termux/files/usr/etc/tls/openssl.cnf" "$BACKUP_DIR/openssl.cnf.backup"
-    fi
+    # Установка основных пакетов
+    for pkg in python tk x11-repo git wget openssl; do
+        pkg install -y $pkg || error "Не удалось установить $pkg"
+    done
     
-    yes | pkg install openssl --reinstall 2>/dev/null || {
-        warning "Не удалось автоматически исправить OpenSSL, попробую ручной метод..."
-        pkg uninstall openssl -y
-        pkg clean
-        pkg update -y
-        yes | pkg install openssl -y || error "Критическая ошибка: не удалось установить OpenSSL"
+    # Дополнительные зависимости для Tkinter
+    pkg install -y python-tkinter || {
+        warning "Прямая установка python-tkinter не удалась, пробуем альтернативный метод..."
+        pip install tk || error "Не удалось установить tk через pip"
+    }
+    
+    # Проверка установки Tkinter
+    python -c "import tkinter" 2>/dev/null || {
+        warning "Tkinter не установлен, пробуем переустановить Python..."
+        pkg uninstall python -y
+        pkg install -y python tk
+        python -c "import tkinter" || error "Критическая ошибка: Tkinter не работает"
     }
 }
 
-create_backup() {
-    info "Создаем резервную копию текущей установки..."
-    mkdir -p "$BACKUP_DIR"
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
-    tar -czf "$BACKUP_DIR/pvz2_editor_backup_$timestamp.tar.gz" -C "$INSTALL_DIR" . 2>/dev/null
-}
-
-check_updates() {
-    info "Проверка обновлений..."
-    if [ -f "$INSTALLER_SCRIPT" ]; then
-        rm -f "$INSTALLER_SCRIPT"
-    fi
-    
-    if ! curl -sL https://raw.githubusercontent.com/DarkLegeng/pvz2_editor/main/termux_launcher.sh > "$INSTALLER_SCRIPT"; then
-        error "Не удалось загрузить обновлённый скрипт"
-    fi
-    
-    chmod +x "$INSTALLER_SCRIPT"
-    info "Обновлённый скрипт сохранён как $INSTALLER_SCRIPT"
-}
-
-main_install() {
-    auto_fix_configs
-    
-    info "1. Обновление пакетов Termux..."
-    yes | pkg update -y && yes | pkg upgrade -y || {
-        warning "Обновление пакетов завершилось с предупреждениями, проверяем OpenSSL..."
-        fix_openssl_issue
-        yes | pkg upgrade -y || error "Не удалось обновить пакеты"
-    }
-    
-    info "2. Установка системных зависимостей..."
-    yes | pkg install -y python git tk x11-repo || error "Не удалось установить зависимости"
-    
-    info "3. Настройка доступа к хранилищу..."
+setup_storage() {
+    info "Настройка доступа к хранилищу..."
     termux-setup-storage
     mkdir -p "$LEVELS_DIR" || warning "Не удалось создать папку для уровней"
-    
-    info "4. Загрузка/обновление редактора..."
+}
+
+clone_or_update_repo() {
+    info "Загрузка/обновление редактора..."
     if [ -d "$INSTALL_DIR" ]; then
-        create_backup
+        info "Обновление существующей копии..."
         cd "$INSTALL_DIR"
-        git reset --hard || warning "Не удалось сбросить изменения"
+        git reset --hard
         git pull || error "Не удалось обновить репозиторий"
     else
+        info "Клонирование репозитория..."
         git clone "$REPO_URL" "$INSTALL_DIR" || error "Не удалось клонировать репозиторий"
         cd "$INSTALL_DIR"
     fi
+}
+
+install_python_deps() {
+    info "Установка Python-зависимостей..."
+    pip install --upgrade pip || warning "Не удалось обновить pip"
     
-    info "5. Установка Python-зависимостей..."
-    yes | pip install --upgrade pip || warning "Не удалось обновить pip"
-    yes | pip install -r requirements.txt || error "Не удалось установить зависимости"
-    
-    info "6. Настройка системы сохранения..."
-    if grep -q "editor.save_level(filename)" level.py; then
-        sed -i "s|editor.save_level(filename)|editor.save_level(f\"$LEVELS_DIR/{filename}\")|g" level.py || \
-        warning "Не удалось изменить путь сохранения"
+    if [ -f "$PYTHON_DEPS" ]; then
+        pip install -r "$PYTHON_DEPS" || error "Не удалось установить зависимости"
     else
-        debug "Путь сохранения уже настроен"
+        warning "Файл $PYTHON_DEPS не найден, устанавливаем основные пакеты..."
+        pip install tk pillow || error "Не удалось установить основные пакеты"
     fi
-    
-    chmod +x level.py termux_launcher.sh
+}
+
+fix_save_path() {
+    info "Настройка пути сохранения..."
+    sed -i "s|editor.save_level(filename)|editor.save_level(f\"$LEVELS_DIR/{filename}\")|g" level.py || \
+    warning "Не удалось изменить путь сохранения"
 }
 
 run_editor() {
@@ -137,12 +121,13 @@ main() {
     echo -e "║    PvZ 2 Level Editor Installer      ║"
     echo -e "╚══════════════════════════════════════╝${NC}"
     
-    if [ "$0" = "bash" ]; then
-        check_updates
-        exec bash "$INSTALLER_SCRIPT"
-    fi
-    
-    main_install
+    check_termux
+    fix_pkg_config
+    install_dependencies
+    setup_storage
+    clone_or_update_repo
+    install_python_deps
+    fix_save_path
     run_editor
 }
 
