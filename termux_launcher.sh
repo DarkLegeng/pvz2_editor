@@ -87,7 +87,7 @@ main_install() {
     }
     
     info "2. Установка системных зависимостей..."
-    yes | pkg install -y python git tk python-tkinter || error "Не удалось установить зависимости"
+    yes | pkg install -y python git tk x11-repo || error "Не удалось установить зависимости"
     
     info "3. Настройка доступа к хранилищу..."
     termux-setup-storage
