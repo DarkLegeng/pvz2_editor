@@ -1,0 +1,7 @@
+# Шифруем только level.py
+level.py filter=git-crypt diff=git-crypt
+
+# Явно исключаем всё остальное
+* !filter !diff
+termux_launcher.sh !filter !diff
+.gitattributes !filter !diff
